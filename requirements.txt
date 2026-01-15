@@ -1,0 +1,17 @@
+# Lexicon Agent Dependencies
+# Install with: pip install -r requirements.txt
+# Last updated: January 2026
+
+# LangChain ecosystem
+langchain>=1.2.4
+langchain-core>=1.2.7
+langchain-openai>=1.1.7
+
+# OpenAI SDK
+openai>=2.15.0
+
+# SpaCy for linguistic analysis
+spacy>=3.8.11
+
+# Post-install: Download SpaCy English model
+# python -m spacy download en_core_web_sm
