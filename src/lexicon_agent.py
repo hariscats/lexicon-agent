@@ -25,11 +25,14 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
+import os
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+
 # LangChain imports
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage
-from langchain_openai import ChatOpenAI
-from langchain.agents import create_agent
+from langchain_openai import AzureChatOpenAI
+from langgraph.prebuilt import create_react_agent
 
 # SpaCy for linguistic analysis
 import spacy
@@ -789,48 +792,15 @@ class LexiconAgent:
     thinking about what information is needed to answer complex linguistic questions.
     """
 
-    SYSTEM_PROMPT = """You are a Lexicon Agent - an expert linguist and lexicographer who helps users understand words and language with precision.
+    SYSTEM_PROMPT = """You are an expert lexicographer and linguistic analyst.
+    Use the available tools to analyze words, sentences, and meanings.
+    Chain tools together as needed to provide comprehensive answers."""
 
-You have access to several specialized tools:
-
-1. **lookup_definition**: Fetches all definitions of a word from multiple dictionary sources
-2. **analyze_morphology**: Breaks down words into prefix, root, and suffix components
-3. **parse_dependency_structure**: Analyzes sentence grammar using SpaCy dependency parsing
-4. **get_word_grammatical_role**: Determines how a specific word functions in a sentence
-5. **disambiguate_meaning**: The KEY tool - determines which definition applies in context
-6. **analyze_argument_structure**: Identifies rhetorical markers and argument strength
-7. **compare_word_precision**: Compares similar words to clarify distinctions
-8. **get_word_collocations**: Finds words that commonly appear together
-
-## Your Approach
-
-Think like a human researcher. When someone asks about a word in context:
-
-1. **First**, understand what they're asking - do they want the definition, or specifically which definition applies?
-2. **Parse the sentence** to understand its grammatical structure
-3. **Identify the word's role** - is it a noun, verb, modifier? What does it modify or what modifies it?
-4. **Look up definitions** and compare them against the grammatical evidence
-5. **Reason through** which definition fits best and WHY
-6. **Explain clearly** with confidence scores and evidence
-
-## Key Principles
-
-- **Don't just dump all definitions** - identify the ONE that applies
-- **Show your reasoning** - explain why you chose a particular meaning
-- **Use grammatical evidence** - SpaCy parsing reveals how words function
-- **Consider context** - surrounding words provide semantic clues
-- **Be precise** - language matters, and so do distinctions
-
-When disambiguating, always use the `disambiguate_meaning` tool as it combines multiple analyses. For general questions, start with the appropriate specific tool.
-
-Respond conversationally but precisely. You're an expert - be confident in your analysis while acknowledging uncertainty where appropriate."""
-
-    def __init__(self, model_name: str = "gpt-4o", temperature: float = 0):
+    def __init__(self, temperature: float = 0):
         """
-        Initialize the Lexicon Agent.
+        Initialize the Lexicon Agent with Entra ID authentication.
 
         Args:
-            model_name: OpenAI model to use (gpt-4o recommended for best results)
             temperature: Model temperature (0 for deterministic responses)
         """
         self.tools = [
@@ -844,42 +814,40 @@ Respond conversationally but precisely. You're an expert - be confident in your 
             get_word_collocations
         ]
 
-        # Use the new LangChain 1.2+ create_agent API
-        self.agent = create_agent(
-            model=ChatOpenAI(model=model_name, temperature=temperature),
-            tools=self.tools,
-            system_prompt=self.SYSTEM_PROMPT
+        # Create token provider for Entra ID authentication
+        token_provider = get_bearer_token_provider(
+            DefaultAzureCredential(),
+            "https://cognitiveservices.azure.com/.default"
+        )
+
+        # Use Azure OpenAI with Entra ID auth
+        llm = AzureChatOpenAI(
+            azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5.2-chat"),
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
+            azure_ad_token_provider=token_provider,
+            
+        )
+
+        self.agent = create_react_agent(
+            model=llm,
+            tools=self.tools
         )
 
         self.chat_history = []
 
-    def query(self, user_input: str) -> str:
-        """
-        Process a user query about language/words.
-
-        The agent will reason about what tools to use and chain them
-        together to provide the best answer.
-
-        Args:
-            user_input: The user's question or request
-
-        Returns:
-            The agent's response with analysis and reasoning
-        """
-        # Use stream to get the final response
-        result = self.agent.invoke(
-            {"messages": [HumanMessage(content=user_input)]},
-            stream_mode="values"
-        )
-
-        # Extract the final AI message
-        final_message = result["messages"][-1].content
-
-        # Update chat history
+    def chat(self, user_input: str) -> str:
+        """Process user input and return agent response."""
         self.chat_history.append(HumanMessage(content=user_input))
-        self.chat_history.append(AIMessage(content=final_message))
-
-        return final_message
+        
+        result = self.agent.invoke({
+            "messages": self.chat_history
+        })
+        
+        response = result["messages"][-1].content
+        self.chat_history.append(AIMessage(content=response))
+        
+        return response
 
     def clear_history(self):
         """Clear conversation history."""
@@ -1006,7 +974,7 @@ def interactive_cli():
 
         print("\nLexicon Agent: ", end="")
         try:
-            response = agent.query(user_input)
+            response = agent.chat(user_input)
             print(response)
         except Exception as e:
             print(f"Error: {e}")
@@ -1036,7 +1004,7 @@ if __name__ == "__main__":
             # Use full agent
             try:
                 agent = LexiconAgent()
-                print(agent.query(query))
+                print(agent.chat(query))
             except Exception as e:
                 print(f"Error: {e}")
                 print("Make sure OPENAI_API_KEY is set.")
